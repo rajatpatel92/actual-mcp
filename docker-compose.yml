@@ -1,0 +1,26 @@
+services:
+  actual-mcp:
+    build: .
+    environment:
+      - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL}
+      - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
+      - ACTUAL_BUDGET_SYNC_ID=${ACTUAL_BUDGET_SYNC_ID}
+      - ACTUAL_BUDGET_ENCRYPTION_PASSWORD=${ACTUAL_BUDGET_ENCRYPTION_PASSWORD}
+      - ACTUAL_BUDGET_SYNC_ID_2=${ACTUAL_BUDGET_SYNC_ID_2}
+      - ACTUAL_BUDGET_ENCRYPTION_PASSWORD_2=${ACTUAL_BUDGET_ENCRYPTION_PASSWORD_2}
+      - ACTUAL_DATA_DIR=/data/actualbudget-data
+    volumes:
+      - actualbudget-data:/data
+    command: ["--sse", "--enable-write"]
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - actualbudget
+
+volumes:
+  actualbudget-data:
+
+networks:
+  actualbudget:
+    external: true
