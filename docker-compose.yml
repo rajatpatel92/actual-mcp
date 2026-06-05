@@ -9,6 +9,7 @@ services:
       - ACTUAL_BUDGET_SYNC_ID_2=${ACTUAL_BUDGET_SYNC_ID_2}
       - ACTUAL_BUDGET_ENCRYPTION_PASSWORD_2=${ACTUAL_BUDGET_ENCRYPTION_PASSWORD_2}
       - ACTUAL_DATA_DIR=/data/actualbudget-data
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     volumes:
       - actualbudget-data:/data
     command: ["--sse", "--enable-write"]
