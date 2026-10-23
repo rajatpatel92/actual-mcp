@@ -306,9 +306,9 @@ async function main(): Promise<void> {
         process.stderr.write(`Actual Budget MCP Server (HTTP) listening on port ${resolvedPort}\n`);
       }
     });
-    // SIGINT handler: close all active connections
-    process.on('SIGINT', () => {
-      process.stderr.write('SIGINT received, shutting down server\n');
+    // Process shutdown handlers: close all active connections and release Actual API
+    const handleShutdown = async (signal: string) => {
+      process.stderr.write(`${signal} received, shutting down server\n`);
       for (const [, conn] of legacySseConnections) {
         conn.server.close();
       }
@@ -316,19 +316,25 @@ async function main(): Promise<void> {
         session.server.close();
         session.transport.close();
       }
+      await shutdownActualApi();
       process.exit(0);
-    });
+    };
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
   } else {
     const server = createServer({ enableWrite: !!enableWrite });
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error('Actual Budget MCP Server (stdio) started');
 
-    process.on('SIGINT', () => {
-      console.error('SIGINT received, shutting down server');
+    const handleShutdown = async (signal: string) => {
+      console.error(`${signal} received, shutting down server`);
       server.close();
+      await shutdownActualApi();
       process.exit(0);
-    });
+    };
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
   }
 }
 
