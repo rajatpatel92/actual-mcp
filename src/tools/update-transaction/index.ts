@@ -1,20 +1,52 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { toJSONSchema } from 'zod';
-import { success, errorFromCatch } from '../../utils/response.js';
+import { error, success, errorFromCatch } from '../../utils/response.js';
 import { updateTransaction } from '../../actual-api.js';
+import { resolveTransferPayee } from '../../core/data/resolve-transfer-payee.js';
 import { UpdateTransactionArgsSchema, type UpdateTransactionArgs, ToolInput } from '../../types.js';
 
 export const schema = {
   name: 'update-transaction',
   description:
-    'Update an existing transaction. Can modify date, amount, payee, category, notes, cleared status, and subtransactions.',
+    'Update an existing transaction. Can modify date, amount, payee, category, notes, cleared status, and ' +
+    'subtransactions, including turning a subtransaction into a transfer via transfer_account_id.',
   inputSchema: toJSONSchema(UpdateTransactionArgsSchema) as ToolInput,
 };
 
 export async function handler(args: UpdateTransactionArgs): Promise<CallToolResult> {
   try {
+    // Reason: payee_name is only resolved on the create/import path in @actual-app/api.
+    // On update it reaches an unguarded schema-conform step that throws asynchronously
+    // after the call already appears to succeed, crashing the whole server process
+    // (upstream https://github.com/s-stefanov/actual-mcp/issues/150). Reject it here
+    // with a clear alternative rather than silently dropping it or letting it crash.
+    if (args && typeof args === 'object' && 'payee_name' in args) {
+      return error(
+        'payee_name is not supported on update-transaction (it can crash the server). ' +
+          'Use create-payee to get or create a payee, then pass its id via the payee field instead.'
+      );
+    }
+
     const validatedArgs = UpdateTransactionArgsSchema.parse(args);
     const { id: transactionId, ...updateData } = validatedArgs;
+
+    // Reason: A subtransaction can itself be a transfer leg (e.g. turning one line of an
+    // existing split into a transfer to savings). Resolve each subtransaction's
+    // transfer_account_id into the corresponding transfer payee before sending to the API.
+    if (updateData.subtransactions) {
+      for (const sub of updateData.subtransactions) {
+        if (sub.transfer_account_id) {
+          const subTransferPayeeId = await resolveTransferPayee(sub.transfer_account_id);
+          if (!subTransferPayeeId) {
+            return error(
+              `No transfer payee found for account ${sub.transfer_account_id}. Ensure the destination account exists.`
+            );
+          }
+          sub.payee = subTransferPayeeId;
+        }
+        delete sub.transfer_account_id;
+      }
+    }
 
     // Filter out undefined values to only send fields that were explicitly provided
     const filteredUpdateData = Object.fromEntries(

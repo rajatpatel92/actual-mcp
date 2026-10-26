@@ -28,6 +28,26 @@ The Actual Budget MCP Server allows you to interact with your personal financial
 
 - **`spending-by-category`** - Generate spending breakdowns categorized by type
 - **`monthly-summary`** - Get monthly income, expenses, and savings metrics
+- **`budget-vs-actual`** - Compare budgeted amounts against actual spending per category
+- **`net-worth`** - Track assets, liabilities, and net worth across all accounts over time
+- **`category-trends`** - See how spending in each category moves month over month, with trend direction
+- **`spending-by-payee`** - Rank payees by how much was spent with (or received from) each one
+- **`cash-flow`** - Report income, expenses, and net cash flow per month or week
+
+> The five tools above return JSON rather than markdown, so amounts stay machine-readable. Every amount is an integer number of cents, and each response carries an `amountsIn` field describing the sign conventions it uses.
+
+#### Custom Reports & Dashboards
+
+- **`get-custom-reports`** - Retrieve every saved custom report from the Reports section
+- **`create-custom-report`** - Create a saved custom report
+- **`update-custom-report`** - Update fields on a saved custom report, leaving the rest unchanged
+- **`delete-custom-report`** - Delete a saved custom report
+- **`get-dashboards`** - Retrieve every dashboard page and the widgets laid out on it
+- **`add-dashboard-widget`** - Add a widget to a dashboard page
+- **`update-dashboard-widget`** - Update a widget's configuration, position, or size
+- **`remove-dashboard-widget`** - Remove a widget from its page
+- **`organize-dashboard`** - Reposition and resize several widgets at once
+- **`create-dashboard-page`** / **`rename-dashboard-page`** / **`delete-dashboard-page`** - Manage dashboard pages
 
 #### Categories
 
@@ -45,6 +65,7 @@ The Actual Budget MCP Server allows you to interact with your personal financial
 - **`create-payee`** - Create a new payee
 - **`update-payee`** - Update an existing payee's details
 - **`delete-payee`** - Delete a payee
+- **`merge-payees`** - Merge duplicate payees into a single target payee
 
 #### Rules
 
@@ -119,6 +140,10 @@ export ACTUAL_PASSWORD="your-password"
 
 # Specific budget to use (optional)
 export ACTUAL_BUDGET_SYNC_ID="your-budget-id"
+
+# How long downloaded data stays fresh before the server re-syncs, in ms
+# (default: 60000). Use 0 to sync before every call, or -1 to never sync.
+export ACTUAL_SYNC_TTL_MS="60000"
 ```
 
 Optional: separate encryption budget password
@@ -130,15 +155,20 @@ If your Actual setup requires a different password to unlock the local/encrypted
 export ACTUAL_BUDGET_ENCRYPTION_PASSWORD="your-encryption-password"
 ```
 
-Optional: sync cooldown interval
+Optional: OpenID servers (session token auth)
 
-By default, read tools automatically synchronize with the remote server if more than 30 seconds have elapsed since the last sync. You can configure this cooldown (in milliseconds):
+If your Actual server uses OpenID login (for example Google) with `ACTUAL_OPENID_ENFORCE=true`, password login is disabled, so `ACTUAL_PASSWORD` can't be used. Instead, sign in to Actual in a browser and pass the resulting session token. It takes precedence over `ACTUAL_PASSWORD`.
 
 ```bash
-# Sync cooldown in milliseconds (default: 30000; set to 0 to sync on every query)
-export ACTUAL_SYNC_COOLDOWN_MS=30000
+export ACTUAL_SERVER_URL="https://your-actual-server.com"
+export ACTUAL_SESSION_TOKEN="your-session-token"
 ```
 
+To find the token, sign in to Actual in your browser, open DevTools, and go to **Application → IndexedDB → actual → asyncStorage**. The value of the `user-token` key is your session token. It's a UUID (e.g. `3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c`), not a long JWT-style bearer token. You can check it with `curl -H "X-ACTUAL-TOKEN: <token>" https://your-actual-server.com/account/validate`, which should return `"validated": true`. Treat it like a password: it grants full access to your budgets. How long it stays valid depends on the server's `ACTUAL_TOKEN_EXPIRATION` setting. If it is invalid or expired, the MCP server still starts, but tool calls fail with `Authentication failed: invalid or expired session token`, because the server connects to Actual on the first request (`--test-resources` reports the error immediately). Sign in again, replace the token, and restart the MCP server.
+
+### Connection lifecycle
+
+The server keeps one shared Actual connection for its entire lifetime and serializes budget operations through it. Downloaded data is re-synced when it exceeds the `ACTUAL_SYNC_TTL_MS` freshness window (default: 60,000ms). In both stdio and HTTP modes, SIGINT and SIGTERM drain in-flight work before the server shuts down. You can also explicitly trigger an immediate sync at any time via the `sync-budget` tool.
 ## Usage with Claude Desktop
 
 To use this server with Claude Desktop, add it to your Claude configuration:
@@ -254,7 +284,14 @@ Once connected, you can ask Claude questions like:
 - "Show me my spending by category last month"
 - "How much did I spend on groceries in January?"
 - "What's my savings rate over the past 3 months?"
+- "Which categories am I overspending on this month?"
+- "How has my net worth changed over the past year?"
+- "Which payees do I spend the most with?"
+- "Is my grocery spending trending up or down?"
 - "Analyze my budget and suggest areas to improve"
+- "What custom reports do I have?"
+- "Add a net worth widget to my Spending Plan dashboard"
+- "Rearrange my dashboard so the cash flow card is full width at the top"
 
 ## Usage with Codex CLI
 
@@ -292,12 +329,40 @@ Since MCP servers communicate over stdio, debugging can be challenging. You can 
 npx @modelcontextprotocol/inspector node build/index.js
 ```
 
+### E2E validation gate
+
+The end-to-end test suite (`vitest.e2e.config.ts`) spins up a real Actual Budget server in a Docker container (via Testcontainers), seeds a budget, and drives it through a real MCP client over stdio to verify accounts, transactions, categories, payees, rules, and imports actually persist. It requires Docker to be running locally.
+
+In CI, the `e2e-test` job in `.github/workflows/pr-validation.yml` only runs on release-please PRs (branch prefix `release-please--`) or when a PR is given the `run-e2e` label — it does not run on every PR by default, since it needs Docker and takes longer than the standard checks.
+
+To run it locally:
+
+```bash
+npm run build && npm run test:e2e
+```
+
+Docker must be installed and running; the test suite pulls and starts the Actual server image automatically.
+
 ## Project Structure
 
 - `index.ts` - Main server implementation
 - `types.ts` - Type definitions for API responses and parameters
 - `prompts.ts` - Prompt templates for LLM interactions
 - `utils.ts` - Helper functions for date formatting and more
+
+## Registry & Discovery
+
+`actual-mcp` is published to the [official MCP Registry](https://registry.modelcontextprotocol.io)
+as `io.github.s-stefanov/actual-mcp`. Registry metadata lives in
+[`server.json`](./server.json) and is published automatically on each release
+(see `.github/workflows/release-please.yml`).
+
+It advertises two transports on the npm package — `stdio` (default) and
+`streamable-http` (via the `--sse` flag). (A Docker image is also published,
+but is not yet listed as a registry package.)
+
+Post-release directory listings are tracked in
+[`docs/mcp-registry-checklist.md`](./docs/mcp-registry-checklist.md).
 
 ## License
 

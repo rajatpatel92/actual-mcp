@@ -3,7 +3,7 @@ FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-# Reason: better-sqlite3 ships no prebuilt musl binaries, so npm compiles it with node-gyp.
+# Reason: better-sqlite3 13.x ships no prebuilt binaries, so npm compiles it with node-gyp.
 RUN apk add --no-cache python3 make g++
 
 COPY package.json package-lock.json ./

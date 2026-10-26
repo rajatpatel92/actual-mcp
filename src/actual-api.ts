@@ -1,389 +1,373 @@
-import api from '@actual-app/api';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { BudgetFile, TransactionData, UpdateTransactionData } from './types.js';
+import * as api from '@actual-app/api';
 import { APIAccountEntity, APICategoryEntity, APICategoryGroupEntity, APIPayeeEntity } from '@actual-app/api/models';
-import type { RuleEntity, TransactionEntity, ImportTransactionEntity } from '@actual-app/core/types/models';
-
-const DEFAULT_DATA_DIR: string = path.resolve(os.homedir() || '.', '.actual');
-
-// API initialization state
-let initialized = false;
-let initializing = false;
-let initializationError: Error | null = null;
-
-// Synchronization state
-let lastSyncTimestamp = 0;
-let syncPromise: Promise<void> | null = null;
-const DEFAULT_SYNC_COOLDOWN_MS = 30000;
+import {
+  CustomReportEntity,
+  DashboardPageEntity,
+  DashboardWidgetEntity,
+  RuleEntity,
+  TransactionEntity,
+} from '@actual-app/core/types/models';
+import type { Handlers } from '@actual-app/core/types/handlers';
+import { ImportTransactionEntity } from '@actual-app/core/types/models/import-transaction';
+import { getActualConnection } from './integrations/actual/connection.js';
+import { BudgetMonth, TransactionData, UpdateTransactionData } from './types.js';
 
 /**
- * Initialize the Actual Budget API
+ * Ensures the shared Actual connection is ready.
+ *
+ * @deprecated Use `getActualConnection().ensureReady()` directly.
  */
-export async function initActualApi(): Promise<void> {
-  if (initialized) return;
-  if (initializing) {
-    // Wait for initialization to complete if already in progress
-    while (initializing) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (initializationError) throw initializationError;
-    return;
-  }
-
-  initializing = true;
-  try {
-    console.error('Initializing Actual Budget API...');
-    const dataDir = process.env.ACTUAL_DATA_DIR || DEFAULT_DATA_DIR;
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    const serverURL = process.env.ACTUAL_SERVER_URL;
-    const password = process.env.ACTUAL_PASSWORD;
-    // Reason: InitConfig is a discriminated union in 26.x — NoServerConfig forbids serverURL/password
-    const initConfig = serverURL ? { dataDir, serverURL, password: password ?? '' } : { dataDir };
-    await api.init(initConfig);
-
-    const budgets: BudgetFile[] = await api.getBudgets();
-    if (!budgets || budgets.length === 0) {
-      throw new Error('No budgets found. Please create a budget in Actual first.');
-    }
-
-    // Use specified budget or the first one
-    const budgetId: string = process.env.ACTUAL_BUDGET_SYNC_ID || budgets[0].cloudFileId || budgets[0].id || '';
-    console.error(`Loading budget: ${budgetId}`);
-    await api.downloadBudget(
-      budgetId,
-      process.env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD
-        ? {
-            password: process.env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD,
-          }
-        : undefined
-    );
-
-    initialized = true;
-    lastSyncTimestamp = Date.now();
-    console.error('Actual Budget API initialized successfully');
-  } catch (error) {
-    console.error('Failed to initialize Actual Budget API:', error);
-    initializationError = error instanceof Error ? error : new Error(String(error));
-    throw initializationError;
-  } finally {
-    initializing = false;
-  }
+export function initActualApi(): Promise<void> {
+  return getActualConnection().ensureReady();
 }
 
 /**
- * Shutdown the Actual Budget API
+ * Drains pending work and closes the shared Actual connection.
+ *
+ * @deprecated Use `getActualConnection().drainAndClose()` directly.
  */
-export async function shutdownActualApi(): Promise<void> {
-  if (!initialized) return;
-  try {
-    await api.shutdown();
-  } catch (err) {
-    console.error('Error shutting down Actual Budget API:', err);
-  } finally {
-    initialized = false;
-    lastSyncTimestamp = 0;
-    syncPromise = null;
-  }
+export function shutdownActualApi(): Promise<void> {
+  return getActualConnection().drainAndClose();
 }
 
 /**
  * Synchronize local budget data with the remote Actual server.
  *
- * @param force - If true, bypasses the sync cooldown window.
+ * @param force - If true, bypasses the sync TTL window.
  */
-export async function syncBudget(force = false): Promise<void> {
-  await initActualApi();
-
-  // # Reason: Offline / local-only setups without a remote server URL cannot sync with a server.
-  if (!process.env.ACTUAL_SERVER_URL) {
-    return;
-  }
-
-  const cooldownMs = process.env.ACTUAL_SYNC_COOLDOWN_MS
-    ? parseInt(process.env.ACTUAL_SYNC_COOLDOWN_MS, 10)
-    : DEFAULT_SYNC_COOLDOWN_MS;
-
-  const now = Date.now();
-  if (!force && lastSyncTimestamp > 0 && now - lastSyncTimestamp < cooldownMs) {
-    return;
-  }
-
-  // # Reason: Coalesce concurrent sync requests into a single promise to avoid race conditions.
-  if (syncPromise) {
-    return syncPromise;
-  }
-
-  syncPromise = (async (): Promise<void> => {
-    try {
-      console.error('Syncing budget with Actual Budget server...');
-      await api.sync();
-      lastSyncTimestamp = Date.now();
-      console.error('Budget synced successfully');
-    } catch (error) {
-      // # Reason: If remote sync fails (e.g. temporary network blip), log a warning but allow
-      // operations to proceed using local data rather than failing the entire request.
-      console.error('Warning: Failed to sync budget with Actual Budget server:', error);
-    } finally {
-      syncPromise = null;
-    }
-  })();
-
-  return syncPromise;
-}
-
-// ----------------------------
-// FETCH
-// ----------------------------
-
-/**
- * Get all accounts (ensures API is initialized and fresh)
- */
-export async function getAccounts(): Promise<APIAccountEntity[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getAccounts();
+export function syncBudget(force = true): Promise<void> {
+  return getActualConnection().sync(force);
 }
 
 /**
- * Get account balance (ensures API is initialized and fresh)
+ * Returns every account in the loaded budget.
  */
-export async function getAccountBalance(accountId: string): Promise<number> {
-  await initActualApi();
-  await syncBudget();
-  return api.getAccountBalance(accountId);
+export function getAccounts(): Promise<APIAccountEntity[]> {
+  return getActualConnection().run(() => api.getAccounts());
 }
 
 /**
- * Get all categories (ensures API is initialized and fresh)
+ * Returns every category in the loaded budget.
  */
-export async function getCategories(): Promise<(APICategoryEntity | APICategoryGroupEntity)[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getCategories();
+export function getCategories(): Promise<(APICategoryEntity | APICategoryGroupEntity)[]> {
+  return getActualConnection().run(() => api.getCategories());
 }
 
 /**
- * Get all category groups (ensures API is initialized and fresh)
+ * Returns every category group in the loaded budget.
  */
-export async function getCategoryGroups(): Promise<APICategoryGroupEntity[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getCategoryGroups();
+export function getCategoryGroups(): Promise<APICategoryGroupEntity[]> {
+  return getActualConnection().run(() => api.getCategoryGroups());
 }
 
 /**
- * Get all payees (ensures API is initialized and fresh)
+ * Returns every payee in the loaded budget.
  */
-export async function getPayees(): Promise<APIPayeeEntity[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getPayees();
+export function getPayees(): Promise<APIPayeeEntity[]> {
+  return getActualConnection().run(() => api.getPayees());
 }
 
 /**
- * Get transactions for a specific account and date range (ensures API is initialized and fresh)
+ * Returns transactions for an account within an inclusive date range.
  */
-export async function getTransactions(accountId: string, start: string, end: string): Promise<TransactionEntity[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getTransactions(accountId, start, end);
+export function getTransactions(accountId: string, start: string, end: string): Promise<TransactionEntity[]> {
+  return getActualConnection().run(() => api.getTransactions(accountId, start, end));
 }
 
 /**
- * Get all rules (ensures API is initialized and fresh)
+ * Returns the months for which the loaded budget has data.
  */
-export async function getRules(): Promise<RuleEntity[]> {
-  await initActualApi();
-  await syncBudget();
-  return api.getRules();
-}
-
-// ----------------------------
-// ACTION
-// ----------------------------
-
-/**
- * Create a new payee (ensures API is initialized and syncs to server)
- */
-export async function createPayee(args: Record<string, unknown>): Promise<string> {
-  await initActualApi();
-  const result = await api.createPayee(args as unknown as Omit<APIPayeeEntity, 'id'>);
-  await syncBudget(true);
-  return result;
+export function getBudgetMonths(): Promise<string[]> {
+  return getActualConnection().run(() => api.getBudgetMonths());
 }
 
 /**
- * Update a payee (ensures API is initialized and syncs to server)
+ * Returns budget data for a month in `YYYY-MM` format.
  */
-export async function updatePayee(id: string, args: Record<string, unknown>): Promise<unknown> {
-  await initActualApi();
-  const result = await api.updatePayee(id, args);
-  await syncBudget(true);
-  return result;
+export function getBudgetMonth(month: string): Promise<BudgetMonth> {
+  return getActualConnection().run(() => api.getBudgetMonth(month) as unknown as Promise<BudgetMonth>);
 }
 
 /**
- * Delete a payee (ensures API is initialized and syncs to server)
+ * Returns an account balance, optionally as of a cutoff date.
  */
-export async function deletePayee(id: string): Promise<unknown> {
-  await initActualApi();
-  const result = await api.deletePayee(id);
-  await syncBudget(true);
-  return result;
+export function getAccountBalance(accountId: string, cutoff?: Date): Promise<number> {
+  return getActualConnection().run(() => api.getAccountBalance(accountId, cutoff));
 }
 
 /**
- * Create a new rule (ensures API is initialized and syncs to server)
+ * Returns every transaction rule in the loaded budget.
  */
-export async function createRule(args: Record<string, unknown>): Promise<RuleEntity> {
-  await initActualApi();
-  const result = await api.createRule(args as unknown as Omit<RuleEntity, 'id'>);
-  await syncBudget(true);
-  return result;
+export function getRules(): Promise<RuleEntity[]> {
+  return getActualConnection().run(() => api.getRules());
 }
 
 /**
- * Update a rule (ensures API is initialized and syncs to server)
+ * Creates a payee and returns its identifier.
  */
-export async function updateRule(args: Record<string, unknown>): Promise<RuleEntity> {
-  await initActualApi();
-  const result = await api.updateRule(args as unknown as RuleEntity);
-  await syncBudget(true);
-  return result;
+export function createPayee(args: Record<string, unknown>): Promise<string> {
+  return getActualConnection().run(() => api.createPayee(args as unknown as Omit<APIPayeeEntity, 'id'>));
 }
 
 /**
- * Delete a rule (ensures API is initialized and syncs to server)
+ * Updates a payee with the supplied fields.
  */
-export async function deleteRule(id: string): Promise<boolean> {
-  await initActualApi();
-  const result = await api.deleteRule(id);
-  await syncBudget(true);
-  return result;
+export function updatePayee(id: string, args: Record<string, unknown>): Promise<unknown> {
+  return getActualConnection().run(() => api.updatePayee(id, args));
 }
 
 /**
- * Create a new category (ensures API is initialized and syncs to server)
+ * Deletes a payee by identifier.
  */
-export async function createCategory(args: Record<string, unknown>): Promise<string> {
-  await initActualApi();
-  const result = await api.createCategory(args as unknown as Omit<APICategoryEntity, 'id'>);
-  await syncBudget(true);
-  return result;
+export function deletePayee(id: string): Promise<unknown> {
+  return getActualConnection().run(() => api.deletePayee(id));
 }
 
 /**
- * Update a category (ensures API is initialized and syncs to server)
+ * Merges payees into a target payee. Transactions referencing the merged payees are
+ * reassigned to the target; rules keep working because Actual maps the merged payee IDs
+ * to the target when rules are loaded.
  */
-export async function updateCategory(id: string, args: Record<string, unknown>): Promise<unknown> {
-  await initActualApi();
-  const result = await api.updateCategory(id, args);
-  await syncBudget(true);
-  return result;
+export function mergePayees(targetId: string, mergeIds: string[]): Promise<void> {
+  return getActualConnection().run(() => api.mergePayees(targetId, mergeIds));
 }
 
 /**
- * Delete a category (ensures API is initialized and syncs to server)
+ * Creates a transaction rule and returns the resulting entity.
  */
-export async function deleteCategory(id: string): Promise<void> {
-  await initActualApi();
-  await api.deleteCategory(id);
-  await syncBudget(true);
+export function createRule(args: Record<string, unknown>): Promise<RuleEntity> {
+  return getActualConnection().run(() => api.createRule(args as unknown as Omit<RuleEntity, 'id'>));
 }
 
 /**
- * Create a new category group (ensures API is initialized and syncs to server)
+ * Updates an existing transaction rule.
  */
-export async function createCategoryGroup(args: Record<string, unknown>): Promise<string> {
-  await initActualApi();
-  const result = await api.createCategoryGroup(args as unknown as Omit<APICategoryGroupEntity, 'id'>);
-  await syncBudget(true);
-  return result;
+export function updateRule(args: Record<string, unknown>): Promise<RuleEntity> {
+  return getActualConnection().run(() => api.updateRule(args as unknown as RuleEntity));
 }
 
 /**
- * Update a category group (ensures API is initialized and syncs to server)
+ * Deletes a transaction rule by identifier.
  */
-export async function updateCategoryGroup(id: string, args: Record<string, unknown>): Promise<unknown> {
-  await initActualApi();
-  const result = await api.updateCategoryGroup(id, args);
-  await syncBudget(true);
-  return result;
+export function deleteRule(id: string): Promise<boolean> {
+  return getActualConnection().run(() => api.deleteRule(id));
 }
 
 /**
- * Delete a category group (ensures API is initialized and syncs to server)
+ * Creates a category and returns its identifier.
  */
-export async function deleteCategoryGroup(id: string): Promise<unknown> {
-  await initActualApi();
-  const result = await api.deleteCategoryGroup(id);
-  await syncBudget(true);
-  return result;
+export function createCategory(args: Record<string, unknown>): Promise<string> {
+  return getActualConnection().run(() => api.createCategory(args as unknown as Omit<APICategoryEntity, 'id'>));
 }
 
 /**
- * Create a transaction (ensures API is initialized and syncs to server).
- * Passes runTransfers so that transfer payees automatically create the counterpart transaction.
+ * Updates a category with the supplied fields.
  */
-export async function createTransaction(accountId: string, data: TransactionData): Promise<string> {
-  await initActualApi();
-  const result = await api.addTransactions(accountId, [data], { runTransfers: true });
-  await syncBudget(true);
-  return result;
+export function updateCategory(id: string, args: Record<string, unknown>): Promise<unknown> {
+  return getActualConnection().run(() => api.updateCategory(id, args));
 }
 
 /**
- * Import a list of transactions using Actual's reconciliation logic.
- * Deduplicates via imported_id and optionally supports dry-run validation.
+ * Deletes a category by identifier.
  */
-export async function importTransactions(
+export function deleteCategory(id: string): Promise<void> {
+  return getActualConnection().run(() => api.deleteCategory(id));
+}
+
+/**
+ * Creates a category group and returns its identifier.
+ */
+export function createCategoryGroup(args: Record<string, unknown>): Promise<string> {
+  return getActualConnection().run(() =>
+    api.createCategoryGroup(args as unknown as Omit<APICategoryGroupEntity, 'id'>)
+  );
+}
+
+/**
+ * Updates a category group with the supplied fields.
+ */
+export function updateCategoryGroup(id: string, args: Record<string, unknown>): Promise<unknown> {
+  return getActualConnection().run(() => api.updateCategoryGroup(id, args));
+}
+
+/**
+ * Deletes a category group by identifier.
+ */
+export function deleteCategoryGroup(id: string): Promise<unknown> {
+  return getActualConnection().run(() => api.deleteCategoryGroup(id));
+}
+
+/**
+ * Adds a transaction to an account and returns its identifier.
+ */
+export function createTransaction(accountId: string, data: TransactionData): Promise<string> {
+  return getActualConnection().run(() => api.addTransactions(accountId, [data], { runTransfers: true }));
+}
+
+/**
+ * Imports transactions using Actual's reconciliation and deduplication logic.
+ */
+export function importTransactions(
   accountId: string,
   transactions: ImportTransactionEntity[],
   opts?: { defaultCleared?: boolean; dryRun?: boolean }
 ): Promise<{ added: string[]; updated: string[]; errors: Array<{ message: string }> }> {
-  await initActualApi();
-  const result = await api.importTransactions(accountId, transactions, opts);
-  if (!opts?.dryRun) {
-    await syncBudget(true);
-  }
-  return result;
+  return getActualConnection().run(() => api.importTransactions(accountId, transactions, opts));
 }
 
 /**
- * Update a transaction (ensures API is initialized and syncs to server)
+ * Updates a transaction with the supplied fields.
  */
-export async function updateTransaction(id: string, data: UpdateTransactionData): Promise<unknown> {
-  await initActualApi();
-  const result = await api.updateTransaction(id, data as unknown as Partial<TransactionEntity>);
-  await syncBudget(true);
-  return result;
+export function updateTransaction(id: string, data: UpdateTransactionData): Promise<unknown> {
+  return getActualConnection().run(() => api.updateTransaction(id, data as unknown as Partial<TransactionEntity>));
 }
 
 /**
- * Delete a transaction (ensures API is initialized and syncs to server)
+ * Deletes a transaction by identifier.
  */
-export async function deleteTransaction(id: string): Promise<unknown> {
-  await initActualApi();
-  const result = await api.deleteTransaction(id);
-  await syncBudget(true);
-  return result;
+export function deleteTransaction(id: string): Promise<unknown> {
+  return getActualConnection().run(() => api.deleteTransaction(id));
 }
 
 /**
- * Run bank sync for accounts (ensures API is initialized)
- *
- * @param accountId - Optional. Specific account ID, or special value:
- *   - "onbudget": sync all on-budget linked accounts
- *   - "offbudget": sync all off-budget linked accounts
- *   - undefined: sync ALL linked accounts
+ * Runs bank synchronization for one account or all linked accounts.
  */
-export async function runBankSync(accountId?: string): Promise<void> {
-  await initActualApi();
-  // API expects { accountId } object or undefined for all accounts
-  await api.runBankSync(accountId ? { accountId } : undefined);
-  await syncBudget(true);
+export function runBankSync(accountId?: string): Promise<void> {
+  return getActualConnection().run(() => api.runBankSync(accountId ? { accountId } : undefined));
+}
+
+/**
+ * Invokes an Actual server handler through the initialized connection handle.
+ */
+async function send<K extends keyof Handlers>(name: K, args?: Parameters<Handlers[K]>[0]): Promise<unknown> {
+  return getActualConnection().run((actualLib) => actualLib.send(name, args));
+}
+
+/**
+ * Selects every row from an Actual query table.
+ */
+async function query<T>(tableName: string): Promise<T[]> {
+  return getActualConnection().run(async (actualLib) => {
+    const result = (await api.aqlQuery(actualLib.q(tableName).select('*'))) as { data: T[] };
+    return result.data ?? [];
+  });
+}
+
+/**
+ * Returns every custom report in the loaded budget.
+ */
+export async function getReports(): Promise<CustomReportEntity[]> {
+  return (await send('report/get')) as CustomReportEntity[];
+}
+
+/**
+ * Creates a custom report and returns its identifier.
+ */
+export async function createReport(report: CustomReportEntity): Promise<string> {
+  return (await send('report/create', report)) as string;
+}
+
+/**
+ * Updates an existing custom report.
+ */
+export async function updateReport(report: CustomReportEntity): Promise<void> {
+  await send('report/update', report);
+}
+
+/**
+ * Deletes a custom report by identifier.
+ */
+export async function deleteReport(id: string): Promise<void> {
+  await send('report/delete', id);
+}
+
+/**
+ * Returns every active dashboard page.
+ */
+export async function getDashboardPages(): Promise<DashboardPageEntity[]> {
+  return (await query<DashboardPageEntity>('dashboard_pages')).filter((page) => !page.tombstone);
+}
+
+/**
+ * Returns every active dashboard widget.
+ */
+export async function getDashboardWidgets(): Promise<DashboardWidgetEntity[]> {
+  return (await query<DashboardWidgetEntity>('dashboard')).filter((widget) => !widget.tombstone);
+}
+
+/**
+ * Adds a widget to a dashboard.
+ */
+export async function addDashboardWidget(widget: Record<string, unknown>): Promise<void> {
+  await send('dashboard-add-widget', widget as Parameters<Handlers['dashboard-add-widget']>[0]);
+}
+
+/**
+ * Updates an existing dashboard widget.
+ */
+export async function updateDashboardWidget(widget: Record<string, unknown>): Promise<void> {
+  await send('dashboard-update-widget', widget as Parameters<Handlers['dashboard-update-widget']>[0]);
+}
+
+/**
+ * Removes a widget from a dashboard.
+ */
+export async function removeDashboardWidget(widgetId: string): Promise<void> {
+  await send('dashboard-remove-widget', widgetId);
+}
+
+/**
+ * Replaces the dashboard's widget configuration.
+ */
+export async function updateDashboard(widgets: Array<Record<string, unknown>>): Promise<void> {
+  await send('dashboard-update', widgets as Parameters<Handlers['dashboard-update']>[0]);
+}
+
+/**
+ * Creates a dashboard page and returns its identifier.
+ */
+export async function createDashboardPage(name: string): Promise<string> {
+  return (await send('dashboard-create', { name })) as string;
+}
+
+/**
+ * Renames a dashboard page.
+ */
+export async function renameDashboardPage(id: string, name: string): Promise<void> {
+  await send('dashboard-rename', { id, name });
+}
+
+/**
+ * Deletes a dashboard page by identifier.
+ */
+export async function deleteDashboardPage(id: string): Promise<void> {
+  await send('dashboard-delete', id);
+}
+
+/**
+ * Sets the budgeted amount for a category and month.
+ */
+export function setBudgetAmount(month: string, categoryId: string, value: number): Promise<void> {
+  return getActualConnection().run(() => api.setBudgetAmount(month, categoryId, value));
+}
+
+/**
+ * Enables or disables category carryover for a month.
+ */
+export function setBudgetCarryover(month: string, categoryId: string, flag: boolean): Promise<void> {
+  return getActualConnection().run(() => api.setBudgetCarryover(month, categoryId, flag));
+}
+
+/**
+ * Holds an amount from a month for use in the following month.
+ */
+export function holdBudgetForNextMonth(month: string, value: number): Promise<boolean> {
+  return getActualConnection().run(() => api.holdBudgetForNextMonth(month, value));
+}
+
+/**
+ * Clears a previously configured budget hold for a month.
+ */
+export function resetBudgetHold(month: string): Promise<void> {
+  return getActualConnection().run(() => api.resetBudgetHold(month));
 }
