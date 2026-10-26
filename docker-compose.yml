@@ -12,9 +12,9 @@ services:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     volumes:
       - actualbudget-data:/data
-    command: ["--sse", "--enable-write"]
+    command: ['--sse', '--enable-write']
     ports:
-      - "3000:3000"
+      - '3000:3000'
     restart: unless-stopped
     networks:
       - actualbudget

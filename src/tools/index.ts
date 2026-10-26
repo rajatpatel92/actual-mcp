@@ -32,6 +32,7 @@ import * as updateTransaction from './update-transaction/index.js';
 import * as createTransaction from './create-transaction/index.js';
 import * as importTransactions from './import-transactions/index.js';
 import * as runBankSync from './run-bank-sync/index.js';
+import * as syncBudget from './sync-budget/index.js';
 
 const readTools = [
   getTransactions,
@@ -42,6 +43,7 @@ const readTools = [
   getGroupedCategories,
   getPayees,
   getRules,
+  syncBudget,
 ];
 
 const writeTools = [

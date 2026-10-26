@@ -53,6 +53,11 @@ The Actual Budget MCP Server allows you to interact with your personal financial
 - **`update-rule`** - Update an existing transaction rule
 - **`delete-rule`** - Delete a transaction rule
 
+#### Synchronization
+
+- **`sync-budget`** - Synchronize local budget data with the remote Actual Budget server
+- **`run-bank-sync`** - Run bank synchronization (GoCardless/SimpleFIN) to download latest transactions
+
 ### Prompts
 
 - **`financial-insights`** - Generate insights and recommendations based on your financial data
@@ -123,6 +128,15 @@ If your Actual setup requires a different password to unlock the local/encrypted
 ```bash
 # If server auth and encryption/unlock use different passwords
 export ACTUAL_BUDGET_ENCRYPTION_PASSWORD="your-encryption-password"
+```
+
+Optional: sync cooldown interval
+
+By default, read tools automatically synchronize with the remote server if more than 30 seconds have elapsed since the last sync. You can configure this cooldown (in milliseconds):
+
+```bash
+# Sync cooldown in milliseconds (default: 30000; set to 0 to sync on every query)
+export ACTUAL_SYNC_COOLDOWN_MS=30000
 ```
 
 ## Usage with Claude Desktop

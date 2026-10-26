@@ -307,7 +307,7 @@ async function main(): Promise<void> {
       }
     });
     // Process shutdown handlers: close all active connections and release Actual API
-    const handleShutdown = async (signal: string) => {
+    const handleShutdown = async (signal: string): Promise<void> => {
       process.stderr.write(`${signal} received, shutting down server\n`);
       for (const [, conn] of legacySseConnections) {
         conn.server.close();
@@ -327,7 +327,7 @@ async function main(): Promise<void> {
     await server.connect(transport);
     console.error('Actual Budget MCP Server (stdio) started');
 
-    const handleShutdown = async (signal: string) => {
+    const handleShutdown = async (signal: string): Promise<void> => {
       console.error(`${signal} received, shutting down server`);
       server.close();
       await shutdownActualApi();
