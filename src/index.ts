@@ -108,6 +108,15 @@ const safeStringify = (value: unknown): string => {
 const toErrorMessage = (value: unknown): string =>
   value instanceof Error ? `${value.name}: ${value.message}` : safeStringify(value);
 
+// Reason: an unhandled rejection (e.g. async internal error inside @actual-app/api)
+// should log to stderr instead of terminating the long-lived HTTP/SSE server process.
+process.on('unhandledRejection', (reason) => {
+  console.error(`Unhandled rejection: ${toErrorMessage(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+  console.error(`Uncaught exception: ${toErrorMessage(err)}`);
+});
+
 // ----------------------------
 // SERVER STARTUP
 // ----------------------------
